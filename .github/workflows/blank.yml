@@ -1,0 +1,85 @@
+name: "Artifactory Generic OIDC Multi-Job"
+
+on:
+  workflow_dispatch:
+  push:
+    # Uncomment and specify branches if needed
+    # branches:
+    #   - feature/*
+
+env:
+  OIDC_PROVIDER: 'manu-new'
+  OIDC_AUDIENCE: 'newmanu'
+  JF_URL: "https://hts2.jfrog.io"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-artifact:
+    runs-on: ubuntu-latest
+    outputs:
+      access_token: ${{ steps.exchange_token.outputs.ACCESS_TOKEN }} # Set output for access token
+      
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Fetch OIDC Token
+        id: fetch_oidc_token
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          JF_URL: ${{ env.JF_URL }}
+        with:
+          oidc-provider-name: ${{ env.OIDC_PROVIDER }}
+          oidc-audience: ${{ env.OIDC_AUDIENCE }}
+
+      - name: Get ID Token
+        id: get_id_token
+        run: |
+          ID_TOKEN=$(curl -sLS -H "User-Agent: actions/oidc-client" -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=github" | jq .value | tr -d '"')
+          echo "ID_TOKEN=${ID_TOKEN}" >> $GITHUB_ENV
+
+      - name: Exchange token with access
+        id: exchange_token
+        env:
+          ID_TOKEN: ${{ env.ID_TOKEN }}
+          JFROG_PLATFORM_URL: ${{ env.JF_URL }}
+        run: |
+          ACCESS_TOKEN=$(curl -XPOST -H "Content-Type: application/json" "https://hts2.jfrog.io/access/api/v1/oidc/token" \
+          -d "{\"grant_type\": \"urn:ietf:params:oauth:grant-type:token-exchange\", \"subject_token_type\":\"urn:ietf:params:oauth:token-type:id_token\", \"subject_token\": \"${ID_TOKEN}\", \"provider_name\": \"manu-new\"}" | jq .access_token | tr -d '"')
+          echo "::set-output name=ACCESS_TOKEN::${ACCESS_TOKEN}" # Pass the access token as output
+
+     # --- Publishing a Terraform Module ---
+      # Artifactory requires the module to be packed into a ZIP file
+      - name: Archive Terraform Module
+        run: |
+          # Example: zip up your module source files
+          MODULE_VERSION=${{ github.ref_name }} # Assuming the branch/tag name is the version
+          MODULE_NAME='vpc' # e.g., my-module-name
+          MODULE_NAMESPACE='myorg' # e.g., your-namespace
+          
+          # Create the required zip file name: <MODULE_NAME>-<PROVIDER_NAME>-<VERSION>.zip
+          # Assuming 'aws' is the provider. Adjust as needed.
+          ZIP_FILE="${MODULE_NAME}-aws-${MODULE_VERSION}.zip"
+          zip -r $ZIP_FILE . -x '*.git*'
+          echo "ZIPPING complete. File: $ZIP_FILE"
+          
+          # Exporting variables to be used in the next step
+          echo "MODULE_NAMESPACE=$MODULE_NAMESPACE" >> $GITHUB_ENV
+          echo "MODULE_NAME=$MODULE_NAME" >> $GITHUB_ENV
+          echo "MODULE_VERSION=$MODULE_VERSION" >> $GITHUB_ENV
+          echo "ZIP_FILE=$ZIP_FILE" >> $GITHUB_ENV
+          
+          # Add a check to verify the file exists locally
+          ls -la $ZIP_FILE
+
+      - name: Publish Terraform Module to Artifactory
+        # The JFrog CLI command to publish a module
+        run: |
+          # CORRECT SYNTAX: jf rt u <local_file> <repository_key>/<target_path_in_repo>/
+          # Local file is: ${{ env.ZIP_FILE }}
+          # Target is: manu-terra-virtual/myorg/vpc/aws/main/
+          jf rt u ${{ env.ZIP_FILE }} manu-terra-virtual/${{ env.MODULE_NAMESPACE }}/${{ env.MODULE_NAME }}/aws/${{ env.MODULE_VERSION }}/
