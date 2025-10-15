@@ -79,7 +79,4 @@ jobs:
       - name: Publish Terraform Module to Artifactory
         # The JFrog CLI command to publish a module
         run: |
-          # CORRECT SYNTAX: jf rt u <local_file> <repository_key>/<target_path_in_repo>/
-          # Local file is: ${{ env.ZIP_FILE }}
-          # Target is: manu-terra-virtual/myorg/vpc/aws/main/
           jf rt u ${{ env.ZIP_FILE }} manu-terra-virtual/${{ env.MODULE_NAMESPACE }}/${{ env.MODULE_NAME }}/aws/${{ env.MODULE_VERSION }}/
